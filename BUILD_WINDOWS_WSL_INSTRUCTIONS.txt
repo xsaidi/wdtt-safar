@@ -1,0 +1,127 @@
+SafarVPN Android APK build on Windows 10 via WSL2
+=================================================
+
+This project should be built from WSL2 Ubuntu on Windows 10.
+The native Go build scripts expect Linux Android NDK toolchains
+with linux-x86_64 binaries.
+
+
+1. Install WSL2 Ubuntu
+----------------------
+
+Run PowerShell as Administrator:
+
+    wsl --install -d Ubuntu-24.04
+
+Restart Windows if requested, then open Ubuntu.
+
+
+2. Install base packages
+------------------------
+
+    sudo apt update
+    sudo apt install -y git curl unzip zip openjdk-17-jdk
+
+
+3. Install Go 1.26+
+------------------
+
+    curl -L -o /tmp/go.tgz https://go.dev/dl/go1.26.0.linux-amd64.tar.gz
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf /tmp/go.tgz
+
+    echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
+    source ~/.bashrc
+
+    go version
+
+
+4. Install Android SDK and NDK in WSL
+-------------------------------------
+
+Official Android command-line tools page:
+
+    https://developer.android.com/studio
+
+Commands:
+
+    mkdir -p "$HOME/Android/Sdk/cmdline-tools"
+    cd /tmp
+
+    curl -L -o commandlinetools.zip https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip
+    unzip -q commandlinetools.zip -d android-cmdline
+    mv android-cmdline/cmdline-tools "$HOME/Android/Sdk/cmdline-tools/latest"
+
+    cat >> ~/.bashrc <<'EOF'
+    export ANDROID_HOME=$HOME/Android/Sdk
+    export ANDROID_SDK_ROOT=$ANDROID_HOME
+    export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+    EOF
+
+    source ~/.bashrc
+
+    yes | sdkmanager --licenses
+
+    sdkmanager \
+      "platform-tools" \
+      "platforms;android-35" \
+      "build-tools;35.0.0" \
+      "ndk;28.2.13676358"
+
+
+5. Clone the repository
+-----------------------
+
+Use the master branch. The SafarVPN changes were pushed there.
+
+    cd ~
+    git clone -b master https://github.com/xsaidi/wdtt-safar.git
+    cd wdtt-safar
+
+If GitHub asks for a password, use a GitHub Personal Access Token
+instead of your account password.
+
+
+6. Configure SDK path
+---------------------
+
+    echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+If the laptop has less than 16 GB RAM, reduce Gradle heap:
+
+    sed -i 's/-Xmx4096m/-Xmx2048m/' gradle.properties
+
+
+7. Build debug APK
+------------------
+
+    ./gradlew :app:assembleDebug --no-daemon --max-workers=2
+
+Debug APK output directory:
+
+    app/build/outputs/apk/debug/
+
+
+8. Build release APK
+--------------------
+
+Create a release keystore:
+
+    ./scripts/create-safarvpn-keystore.sh
+    set -a
+    source keystore/safarvpn-signing.env
+    set +a
+
+Build release APK:
+
+    ./gradlew :app:assembleRelease --no-daemon --max-workers=2
+
+Release APK output directory:
+
+    app/build/outputs/apk/release/
+
+Look for a file like:
+
+    app-universal-release.apk
+
+For distribution to users, use the release APK, not the debug APK.
