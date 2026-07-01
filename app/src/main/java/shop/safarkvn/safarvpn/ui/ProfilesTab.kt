@@ -1865,6 +1865,7 @@ fun ProfilesTab(
                 }
             }
         }
+        }
         if (profiles.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(
@@ -1875,7 +1876,7 @@ fun ProfilesTab(
             )
         }
     }
-        
+
     SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp))
 
     Row(
