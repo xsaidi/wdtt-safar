@@ -152,4 +152,5 @@ dependencies {
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("androidx.webkit:webkit:1.12.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

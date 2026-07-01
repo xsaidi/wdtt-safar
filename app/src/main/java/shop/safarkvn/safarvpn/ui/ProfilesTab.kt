@@ -339,6 +339,7 @@ fun ProfilesTab(
     var scannedProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var scannedMultipleProfiles by remember { mutableStateOf<ParsedSubscription?>(null) }
     var showFormatsInfoDialog by rememberSaveable { mutableStateOf(false) }
+    var smartImportBusy by remember { mutableStateOf(false) }
     var deviceStatuses by remember { mutableStateOf<Map<String, ProfileDeviceStatus>>(emptyMap()) }
     var unbindTarget by remember { mutableStateOf<ConnectionProfile?>(null) }
     var unbindOnlyCurrent by remember { mutableStateOf(true) }
@@ -378,6 +379,99 @@ fun ProfilesTab(
         }
     }
 
+    fun showParsedImport(parsed: ParsedSubscription) {
+        if (parsed.profiles.size == 1) {
+            scannedProfile = parsed.profiles.first()
+        } else {
+            scannedMultipleProfiles = parsed
+        }
+    }
+
+    fun importRawText(rawText: String) {
+        val trimmed = rawText.trim()
+        if (trimmed.isEmpty()) {
+            Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        scope.launch {
+            if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+                if (smartImportBusy) return@launch
+                smartImportBusy = true
+                val result = profilesStore.addSubscription(trimmed)
+                smartImportBusy = false
+                result.fold(
+                    onSuccess = {
+                        Toast.makeText(context, "Подписка «${it.name}» добавлена", Toast.LENGTH_SHORT).show()
+                        if (it.groupId.isNotBlank()) selectedFilterGroup = it.groupId
+                    },
+                    onFailure = { e ->
+                        Toast.makeText(context, "Ошибка подписки: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                )
+                return@launch
+            }
+
+            val parsed = parseMultipleConfigs(trimmed)
+            if (parsed != null) {
+                showParsedImport(parsed)
+                Toast.makeText(context, "Конфигурация успешно прочитана", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(
+                    context,
+                    "Неизвестный формат. Скопируйте HTTPS-ссылку из @safarvpn_bot",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    fun importFromClipboard() {
+        try {
+            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            val clipData = clipboard.primaryClip
+            if (clipData != null && clipData.itemCount > 0) {
+                val item = clipData.getItemAt(0)
+                val text = item.coerceToText(context)?.toString().orEmpty()
+                importRawText(text)
+            } else {
+                Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Не удалось прочитать буфер: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun scanQrCode() {
+        try {
+            val activity = run {
+                val currentAct = shop.safarkvn.safarvpn.MainActivity.currentActivity
+                if (currentAct != null) return@run currentAct
+                var c = context
+                while (c is android.content.ContextWrapper) {
+                    if (c is android.app.Activity) return@run c
+                    c = c.baseContext
+                }
+                context
+            }
+            val scanner = com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(activity)
+            scanner.startScan()
+                .addOnSuccessListener { barcode ->
+                    importRawText(barcode.rawValue.orEmpty())
+                }
+                .addOnFailureListener { e ->
+                    Toast.makeText(context, "Ошибка сканирования: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+        } catch (e: Exception) {
+            val msg = e.message ?: "неизвестная ошибка"
+            if (msg.contains("null", ignoreCase = true) || msg.contains("NullPointerException", ignoreCase = true)) {
+                Toast.makeText(context, "Не удалось запустить сканер: отсутствует или отключен Google Play Services", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "Не удалось запустить сканер: $msg", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     // Лаунчер системного выборщика файлов
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -385,16 +479,7 @@ fun ProfilesTab(
         if (uri != null) {
             try {
                 val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-                val parsed = parseMultipleConfigs(text)
-                if (parsed != null) {
-                    if (parsed.profiles.size == 1) {
-                        scannedProfile = parsed.profiles.first()
-                    } else {
-                        scannedMultipleProfiles = parsed
-                    }
-                } else {
-                    Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_LONG).show()
-                }
+                importRawText(text)
             } catch (e: Exception) {
                 Toast.makeText(context, "Ошибка чтения файла: ${e.message}", Toast.LENGTH_SHORT).show()
             }
@@ -406,16 +491,7 @@ fun ProfilesTab(
         val uri = importFileUri ?: return@LaunchedEffect
         try {
             val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-            val parsed = parseMultipleConfigs(text)
-            if (parsed != null) {
-                if (parsed.profiles.size == 1) {
-                    scannedProfile = parsed.profiles.first()
-                } else {
-                    scannedMultipleProfiles = parsed
-                }
-            } else {
-                Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_LONG).show()
-            }
+            importRawText(text)
         } catch (e: Exception) {
             Toast.makeText(context, "Ошибка чтения файла: ${e.message}", Toast.LENGTH_SHORT).show()
         }
@@ -590,7 +666,7 @@ fun ProfilesTab(
                     result.fold(
                         onSuccess = {
                             Toast.makeText(context, "Подписка «${it.name}» добавлена", Toast.LENGTH_SHORT).show()
-                            selectedFilterGroup = it.groupId.ifBlank { selectedFilterGroup }
+                            if (it.groupId.isNotBlank()) selectedFilterGroup = it.groupId
                             showAddSubscriptionDialog = false
                         },
                         onFailure = { e ->
@@ -1240,6 +1316,48 @@ fun ProfilesTab(
             }
         }
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = { importFromClipboard() },
+                enabled = !smartImportBusy,
+                modifier = Modifier.weight(1f).height(54.dp),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                if (smartImportBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("Вставить из буфера", fontWeight = FontWeight.Bold, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = { scanQrCode() },
+                modifier = Modifier.size(54.dp),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Icon(Icons.Filled.QrCodeScanner, contentDescription = "QR")
+            }
+            OutlinedButton(
+                onClick = { filePickerLauncher.launch("*/*") },
+                modifier = Modifier.size(54.dp),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Icon(Icons.Filled.FileOpen, contentDescription = "Файл")
+            }
+        }
+
         visibleSubscriptions.forEach { sub ->
             SubscriptionInfoCard(
                 sub = sub,
@@ -1757,19 +1875,44 @@ fun ProfilesTab(
             )
         }
     }
-}
         
     SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp))
 
-    if (!isSubscriptionFilter) {
-        FloatingActionButton(
-            onClick = { showCreateSheet = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp),
-            containerColor = MaterialTheme.colorScheme.primary
+    Row(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Button(
+            onClick = { importFromClipboard() },
+            enabled = !smartImportBusy,
+            modifier = Modifier.weight(1f).height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            Icon(Icons.Filled.Add, contentDescription = "Добавить")
+            if (smartImportBusy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp
+                )
+            } else {
+                Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("Вставить из буфера", fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+
+        if (!isSubscriptionFilter) {
+            FloatingActionButton(
+                onClick = { showCreateSheet = true },
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Добавить")
+            }
         }
     }
     }
@@ -1890,28 +2033,7 @@ fun ProfilesTab(
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
                         showCreateSheet = false
-                        try {
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                            val clipData = clipboard.primaryClip
-                            if (clipData != null && clipData.itemCount > 0) {
-                                val text = clipData.getItemAt(0).text?.toString() ?: ""
-                                val parsed = parseMultipleConfigs(text)
-                                if (parsed != null) {
-                                    if (parsed.profiles.size == 1) {
-                                        scannedProfile = parsed.profiles.first()
-                                    } else {
-                                        scannedMultipleProfiles = parsed
-                                    }
-                                    Toast.makeText(context, "Конфигурация успешно прочитана!", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    Toast.makeText(context, "В буфере обмена нет подходящей конфигурации", Toast.LENGTH_LONG).show()
-                                }
-                            } else {
-                                Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Не удалось прочитать буфер: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
+                        importFromClipboard()
                     }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -1925,43 +2047,7 @@ fun ProfilesTab(
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
                         showCreateSheet = false
-                        try {
-                            val activity = run {
-                                val currentAct = shop.safarkvn.safarvpn.MainActivity.currentActivity
-                                if (currentAct != null) return@run currentAct
-                                var c = context
-                                while (c is android.content.ContextWrapper) {
-                                    if (c is android.app.Activity) return@run c
-                                    c = c.baseContext
-                                }
-                                context
-                            }
-                            val scanner = com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(activity)
-                            scanner.startScan()
-                                .addOnSuccessListener { barcode ->
-                                    val rawText = barcode.rawValue ?: ""
-                                    val parsed = parseMultipleConfigs(rawText)
-                                    if (parsed != null) {
-                                        if (parsed.profiles.size == 1) {
-                                            scannedProfile = parsed.profiles.first()
-                                        } else {
-                                            scannedMultipleProfiles = parsed
-                                        }
-                                    } else {
-                                        Toast.makeText(context, "Неверный формат QR-кода", Toast.LENGTH_LONG).show()
-                                    }
-                                }
-                                .addOnFailureListener { e ->
-                                    Toast.makeText(context, "Ошибка сканирования: ${e.message}", Toast.LENGTH_SHORT).show()
-                                }
-                        } catch (e: Exception) {
-                            val msg = e.message ?: "неизвестная ошибка"
-                            if (msg.contains("null", ignoreCase = true) || msg.contains("NullPointerException", ignoreCase = true)) {
-                                Toast.makeText(context, "Не удалось запустить сканер: отсутствует или отключен Google Play Services", Toast.LENGTH_LONG).show()
-                            } else {
-                                Toast.makeText(context, "Не удалось запустить сканер: $msg", Toast.LENGTH_SHORT).show()
-                            }
-                        }
+                        scanQrCode()
                     }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp)

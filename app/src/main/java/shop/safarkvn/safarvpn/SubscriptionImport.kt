@@ -2,10 +2,11 @@ package shop.safarkvn.safarvpn
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.util.concurrent.TimeUnit
 import java.util.UUID
 
 data class ParsedRemoteSubscription(
@@ -19,6 +20,10 @@ data class ParsedRemoteSubscription(
 )
 
 object SubscriptionImport {
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .build()
 
     suspend fun fetch(url: String): Result<ParsedRemoteSubscription> = withContext(Dispatchers.IO) {
         try {
@@ -26,20 +31,21 @@ object SubscriptionImport {
             if (!trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true)) {
                 return@withContext Result.failure(IllegalArgumentException("Адрес подписки должен начинаться с http:// или https://"))
             }
-            val conn = (URL(trimmed).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 20_000
-                readTimeout = 20_000
-                requestMethod = "GET"
-                setRequestProperty("Accept", "application/json, text/plain, */*")
-                setRequestProperty("User-Agent", "SafarVPN-Subscription/1.0")
+
+            val request = Request.Builder()
+                .url(trimmed)
+                .get()
+                .header("Accept", "application/json, text/plain, */*")
+                .header("User-Agent", "SafarVPN-Android/${BuildConfig.VERSION_NAME.removePrefix("v")}")
+                .build()
+
+            val body = httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IllegalStateException("HTTP ${response.code}"))
+                }
+                response.body?.string().orEmpty()
             }
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                conn.disconnect()
-                return@withContext Result.failure(IllegalStateException("HTTP $code"))
-            }
-            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            conn.disconnect()
+
             val parsed = parsePayload(body)
                 ?: return@withContext Result.failure(IllegalArgumentException("Неверный формат подписки"))
             if (parsed.profiles.isEmpty()) {

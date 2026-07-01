@@ -1,8 +1,12 @@
 package shop.safarkvn.safarvpn.ui
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -13,13 +17,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.PlayArrow
@@ -45,6 +49,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -159,12 +164,25 @@ fun SettingsTabContent(
 
     val cooldownSeconds by TunnelManager.cooldownSeconds.collectAsStateWithLifecycle()
     var wasRunning by remember { mutableStateOf(false) }
+    var isConnecting by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(tunnelRunning) {
         if (wasRunning && !tunnelRunning) {
             TunnelManager.startCooldown(5)
         }
+        if (tunnelRunning) {
+            isConnecting = false
+        }
         wasRunning = tunnelRunning
+    }
+
+    LaunchedEffect(isConnecting, tunnelRunning) {
+        if (isConnecting && !tunnelRunning) {
+            delay(12_000)
+            if (!TunnelManager.running.value) {
+                isConnecting = false
+            }
+        }
     }
 
     var peerInput by rememberSaveable { mutableStateOf("") }
@@ -475,6 +493,7 @@ fun SettingsTabContent(
             if (VpnService.prepare(context) == null) {
                 startTunnelService()
             } else {
+                isConnecting = false
                 Toast.makeText(context, "VPN-разрешение не выдано", Toast.LENGTH_SHORT).show()
             }
         }
@@ -1453,58 +1472,155 @@ fun SettingsTabContent(
         }
 
         // ═══ Основные действия ═══
-        val buttonColor by animateColorAsState(
-            targetValue = if (tunnelRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-            animationSpec = tween(400),
-            label = "btn_color"
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        val tunnelButtonState = when {
+            tunnelRunning -> TunnelPowerButtonState.Connected
+            isConnecting -> TunnelPowerButtonState.Connecting
+            else -> TunnelPowerButtonState.Disconnected
+        }
+        Box(
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Button(
+            TunnelPowerButton(
+                state = tunnelButtonState,
+                enabled = ((isValid && cooldownSeconds == 0 && !isConnecting) || tunnelRunning),
                 onClick = {
                     if (tunnelRunning) {
+                        isConnecting = false
                         context.startService(
                             Intent(context, TunnelService::class.java).apply { action = "STOP" }
                         )
                     } else {
+                        isConnecting = true
                         requestVpnAndStart()
                         if (autoSwitchToLogs) {
                             onNavigateToLogs()
                         }
                     }
-                },
-                enabled = (isValid && cooldownSeconds == 0) || tunnelRunning,
-                modifier = Modifier.weight(1.35f).height(66.dp),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = buttonColor,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            ) {
-                Icon(
-                    imageVector = if (tunnelRunning) Icons.Default.Stop else Icons.Default.PowerSettingsNew,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = when {
-                        tunnelRunning -> "Остановить"
-                        cooldownSeconds > 0 -> "Подождите ($cooldownSeconds)"
-                        else -> "Подключить"
-                    },
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            TelegramButton(
-                label = "Продлить",
-                modifier = Modifier.weight(1f).height(66.dp)
+                }
             )
         }
 
+    }
+}
+
+private enum class TunnelPowerButtonState {
+    Disconnected,
+    Connecting,
+    Connected
+}
+
+@Composable
+private fun TunnelPowerButton(
+    state: TunnelPowerButtonState,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val baseColor = when (state) {
+        TunnelPowerButtonState.Disconnected -> Color(0xFF1E88E5)
+        TunnelPowerButtonState.Connecting -> Color(0xFFFFA726)
+        TunnelPowerButtonState.Connected -> Color(0xFF43A047)
+    }
+    val label = when (state) {
+        TunnelPowerButtonState.Disconnected -> "Подключить"
+        TunnelPowerButtonState.Connecting -> "Подключение..."
+        TunnelPowerButtonState.Connected -> "Подключено"
+    }
+    val elevation = if (state == TunnelPowerButtonState.Connected) 16.dp else 8.dp
+    val transition = rememberInfiniteTransition(label = "tunnel_pulse")
+    val pulseScale by transition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "pulse_scale"
+    )
+    val pulseAlpha by transition.animateFloat(
+        initialValue = 0.8f,
+        targetValue = 0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "pulse_alpha"
+    )
+
+    Box(
+        modifier = modifier.size(220.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (state == TunnelPowerButtonState.Connected) {
+            Box(
+                modifier = Modifier
+                    .size(180.dp)
+                    .graphicsLayer {
+                        scaleX = pulseScale
+                        scaleY = pulseScale
+                        alpha = pulseAlpha
+                    }
+                    .border(
+                        width = 2.dp,
+                        color = baseColor.copy(alpha = 0.55f),
+                        shape = CircleShape
+                    )
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .size(180.dp)
+                .graphicsLayer {
+                    shadowElevation = elevation.toPx()
+                    shape = CircleShape
+                    clip = false
+                    ambientShadowColor = baseColor.copy(alpha = 0.45f)
+                    spotShadowColor = baseColor.copy(alpha = 0.7f)
+                    alpha = if (enabled) 1f else 0.58f
+                }
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            baseColor.copy(alpha = 0.86f),
+                            baseColor,
+                            baseColor.copy(alpha = 0.92f)
+                        )
+                    )
+                )
+                .clickable(enabled = enabled) { onClick() },
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(horizontal = 18.dp)
+            ) {
+                if (state == TunnelPowerButtonState.Connecting) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(42.dp),
+                        color = Color.White,
+                        strokeWidth = 4.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.PowerSettingsNew,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(46.dp)
+                    )
+                }
+                Text(
+                    text = label,
+                    color = Color.White,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 15.sp,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }
 
