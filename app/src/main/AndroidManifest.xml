@@ -11,17 +11,16 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:name=".WdttApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="qWDTT"
+        android:label="SafarVPN"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:extractNativeLibs="true"
-        android:theme="@style/Theme.WDTTClient">
+        android:theme="@style/Theme.SafarVPN">
 
         <activity
             android:name=".MainActivity"
@@ -106,11 +105,11 @@
 
         <receiver
             android:name=".TunnelWidgetProvider"
-            android:label="qWDTT Туннель"
+            android:label="SafarVPN Туннель"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="net.qwdtt.client.ACTION_TOGGLE" />
+                <action android:name="shop.safarkvn.safarvpn.ACTION_TOGGLE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -119,7 +118,7 @@
 
         <service
             android:name=".QuickToggleTileService"
-            android:label="qWDTT"
+            android:label="SafarVPN"
             android:icon="@drawable/ic_tile_custom"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">

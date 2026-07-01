@@ -736,7 +736,7 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					if exists && entry != nil {
 						srvIP := getPublicIP()
 						configJSON := fmt.Sprintf(`{
-  "name": "qWDTT - %s",
+  "name": "SafarVPN - %s",
   "peer": "%s",
   "vkHashes": "%s",
   "workersPerHash": 16,
@@ -931,17 +931,17 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					pts := strings.Split(tempPorts, ",")
 					link := fmt.Sprintf("wdtt://%s:%s:%s:%s:%s:%s", srvIP, pts[0], pts[1], pts[2], db.MainPassword, hash)
 
-					nameEsc := neturl.QueryEscape(fmt.Sprintf("qWDTT - Main (%s)", srvIP))
+					nameEsc := neturl.QueryEscape(fmt.Sprintf("SafarVPN - Main (%s)", srvIP))
 					peerEsc := neturl.QueryEscape(srvIP)
 					hashesEsc := neturl.QueryEscape(hash)
 					passEsc := neturl.QueryEscape(db.MainPassword)
 					qwdttLink := fmt.Sprintf("qwdtt://config?name=%s&peer=%s&hashes=%s&workers=16&port=9000&pass=%s", nameEsc, peerEsc, hashesEsc, passEsc)
 
-					msgText := fmt.Sprintf("🔗 *Ссылка для главного пароля:*\n`%s`\n\n🔗 *Быстрая ссылка qWDTT:* `%s`", link, qwdttLink)
+					msgText := fmt.Sprintf("🔗 *Ссылка для главного пароля:*\n`%s`\n\n🔗 *Быстрая ссылка SafarVPN:* `%s`", link, qwdttLink)
 					sendTelegram(token, adminID, msgText, nil)
 
 					configJSON := fmt.Sprintf(`{
-  "name": "qWDTT - Main (%s)",
+  "name": "SafarVPN - Main (%s)",
   "peer": "%s",
   "vkHashes": "%s",
   "workersPerHash": 16,
@@ -1003,7 +1003,7 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 				passEsc := neturl.QueryEscape(newPass)
 				qwdttLink := fmt.Sprintf("qwdtt://config?name=%s&peer=%s&hashes=%s&workers=16&port=9000&pass=%s", nameEsc, peerEsc, hashesEsc, passEsc)
 
-				msgText := fmt.Sprintf("👤 Имя: *%s*\n🔑 Новый пароль:\n`%s`\n\n⏰ Действует %d дн. (до %s)\n📱 Лимит: %d устройств\nОжидает первого подключения\n\n🔗 *Быстрая ссылка qWDTT:* `%s`\n\n🔗 *Legacy ссылка:* `%s`", newLabel, newPass, tempDays, expDate, tempMaxDevs, qwdttLink, link)
+				msgText := fmt.Sprintf("👤 Имя: *%s*\n🔑 Новый пароль:\n`%s`\n\n⏰ Действует %d дн. (до %s)\n📱 Лимит: %d устройств\nОжидает первого подключения\n\n🔗 *Быстрая ссылка SafarVPN:* `%s`\n\n🔗 *Legacy ссылка:* `%s`", newLabel, newPass, tempDays, expDate, tempMaxDevs, qwdttLink, link)
 				sendTelegram(token, adminID, msgText, nil)
 
 				configJSON := fmt.Sprintf(`{
@@ -1020,7 +1020,7 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 			}
 
 			if cmd == "/start" || cmd == "/help" {
-				sendTelegram(token, adminID, "🤖 *qWDTT VPN Manager*\n\n/new — Создать пароль\n/list — Список паролей", nil)
+				sendTelegram(token, adminID, "🤖 *SafarVPN Manager*\n\n/new — Создать пароль\n/list — Список паролей", nil)
 
 			} else if strings.HasPrefix(cmd, "/new ") || cmd == "/new" {
 				args := strings.Fields(strings.TrimPrefix(cmd, "/new"))

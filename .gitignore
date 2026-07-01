@@ -27,6 +27,7 @@ app/src/main/assets/server
 server
 
 # ===== Keystore / Secrets =====
+keystore/
 *.keystore
 *.jks
 *.key

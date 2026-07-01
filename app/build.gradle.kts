@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.wdtt.client"   
+    namespace = "shop.safarkvn.safarvpn"
     compileSdk = 35
     
     defaultConfig {
-        applicationId = "net.qwdtt.client"
+        applicationId = "shop.safarkvn.safarvpn"
         minSdk = 28
         targetSdk = 35
         versionCode = 22
@@ -44,23 +44,21 @@ android {
 
     signingConfigs {
         create("release") {
-            val keyFile = localProperties.getProperty("KEYSTORE_FILE")
-            if (keyFile != null) {
-                // Резолвим путь: если начинается с "..", берём от корня проекта
-                val resolvedFile = if (keyFile.startsWith("..")) {
-                    // ../release.keystore -> корень проекта / release.keystore
-                    file(rootDir.resolve(keyFile.substring(3)))
-                } else {
-                    file(keyFile)
-                }
-                if (resolvedFile.exists()) {
-                    storeFile = resolvedFile
-                    storePassword = localProperties.getProperty("KEYSTORE_PASSWORD")
-                    keyAlias = localProperties.getProperty("KEY_ALIAS")
-                    keyPassword = localProperties.getProperty("KEY_PASSWORD")
-                } else {
-                    println("WARNING: Keystore file not found: $keyFile (resolved: ${resolvedFile.absolutePath})")
-                }
+            val keyFile = localProperties.getProperty("SAFARVPN_KEYSTORE_FILE")
+                ?: localProperties.getProperty("KEYSTORE_FILE")
+                ?: "keystore/safarvpn.keystore"
+            val resolvedFile = rootProject.file(keyFile)
+            if (resolvedFile.exists()) {
+                storeFile = resolvedFile
+                storePassword = System.getenv("SAFARVPN_KEYSTORE_PASSWORD")
+                    ?: localProperties.getProperty("SAFARVPN_KEYSTORE_PASSWORD")
+                    ?: localProperties.getProperty("KEYSTORE_PASSWORD")
+                keyAlias = localProperties.getProperty("SAFARVPN_KEY_ALIAS")
+                    ?: localProperties.getProperty("KEY_ALIAS")
+                    ?: "safarvpn"
+                keyPassword = System.getenv("SAFARVPN_KEY_PASSWORD")
+                    ?: localProperties.getProperty("SAFARVPN_KEY_PASSWORD")
+                    ?: localProperties.getProperty("KEY_PASSWORD")
             }
             enableV1Signing = true
             enableV2Signing = true
@@ -76,19 +74,17 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            val keyFile = localProperties.getProperty("KEYSTORE_FILE")
-            val resolvedFile = if (keyFile != null && keyFile.startsWith("..")) {
-                file(rootDir.resolve(keyFile.substring(3)))
-            } else if (keyFile != null) {
-                file(keyFile)
-            } else null
+            val keyFile = localProperties.getProperty("SAFARVPN_KEYSTORE_FILE")
+                ?: localProperties.getProperty("KEYSTORE_FILE")
+                ?: "keystore/safarvpn.keystore"
+            val resolvedFile = rootProject.file(keyFile)
             
-            if (resolvedFile != null && resolvedFile.exists()) {
+            if (resolvedFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
-                println("✅ Signing config applied: ${resolvedFile.absolutePath}")
+                println("Signing config applied: ${resolvedFile.absolutePath}")
             } else {
-                println("⚠️ WARNING: Keystore not found, using debug signing")
-                println("   Looked for: ${resolvedFile?.absolutePath ?: keyFile}")
+                println("WARNING: Keystore not found, using debug signing")
+                println("   Looked for: ${resolvedFile.absolutePath}")
             }
         }
     }
