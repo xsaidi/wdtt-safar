@@ -24,7 +24,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -1316,48 +1315,6 @@ fun ProfilesTab(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Button(
-                onClick = { importFromClipboard() },
-                enabled = !smartImportBusy,
-                modifier = Modifier.weight(1f).height(54.dp),
-                shape = RoundedCornerShape(16.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
-            ) {
-                if (smartImportBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(8.dp))
-                Text("Вставить из буфера", fontWeight = FontWeight.Bold, maxLines = 1)
-            }
-            OutlinedButton(
-                onClick = { scanQrCode() },
-                modifier = Modifier.size(54.dp),
-                shape = RoundedCornerShape(16.dp),
-                contentPadding = PaddingValues(0.dp)
-            ) {
-                Icon(Icons.Filled.QrCodeScanner, contentDescription = "QR")
-            }
-            OutlinedButton(
-                onClick = { filePickerLauncher.launch("*/*") },
-                modifier = Modifier.size(54.dp),
-                shape = RoundedCornerShape(16.dp),
-                contentPadding = PaddingValues(0.dp)
-            ) {
-                Icon(Icons.Filled.FileOpen, contentDescription = "Файл")
-            }
-        }
-
         visibleSubscriptions.forEach { sub ->
             SubscriptionInfoCard(
                 sub = sub,
@@ -1890,7 +1847,9 @@ fun ProfilesTab(
         Button(
             onClick = { importFromClipboard() },
             enabled = !smartImportBusy,
-            modifier = Modifier.weight(1f).height(56.dp),
+            modifier = Modifier
+                .weight(1f)
+                .height(56.dp),
             shape = RoundedCornerShape(16.dp),
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
         ) {
@@ -1904,7 +1863,7 @@ fun ProfilesTab(
                 Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
             }
             Spacer(Modifier.width(8.dp))
-            Text("Вставить из буфера", fontWeight = FontWeight.Bold, maxLines = 1)
+            Text("Вставить из буфера обмена", fontWeight = FontWeight.Bold, maxLines = 1)
         }
 
         if (!isSubscriptionFilter) {
