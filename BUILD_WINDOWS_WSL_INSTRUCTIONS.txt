@@ -5,6 +5,75 @@ This project should be built from WSL2 Ubuntu on Windows 10.
 The native Go build scripts expect Linux Android NDK toolchains
 with linux-x86_64 binaries.
 
+Quick path for an already prepared WSL
+======================================
+
+Use this if WSL, Go, Android SDK/NDK, and the old SafarVPN keystore
+already exist.
+
+1. Clone or update the repository:
+
+    cd ~
+    git clone -b master https://github.com/xsaidi/wdtt-safar.git
+    cd wdtt-safar
+
+If the repository is already cloned:
+
+    cd ~/wdtt-safar
+    git pull origin master
+
+2. Configure Android SDK path:
+
+    echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+Check that ANDROID_HOME is set:
+
+    echo "$ANDROID_HOME"
+    ls "$ANDROID_HOME"
+
+3. Copy the existing release keystore.
+
+Do not create a new keystore for an app update. Reuse the old keystore
+so Android accepts the APK as an update of the already installed app.
+
+If the old project is still in ~/wdtt-safar-old:
+
+    cp -a ~/wdtt-safar-old/keystore ./keystore
+
+If you renamed the previous project to ~/wdtt-safar-oldbutgold:
+
+    cp -a ~/wdtt-safar-oldbutgold/keystore ./keystore
+
+Check that the files are present:
+
+    ls -l keystore
+
+Expected files include:
+
+    safarvpn.keystore
+    safarvpn-signing.env
+
+4. Load signing variables:
+
+    set -a
+    source keystore/safarvpn-signing.env
+    set +a
+
+5. Build the release APK:
+
+    ./gradlew :app:assembleRelease --no-daemon --max-workers=2
+
+6. Find the APK:
+
+    ls -lh app/build/outputs/apk/release/
+
+Use the universal release APK for users, usually:
+
+    app-universal-release.apk
+
+You do not need to build the debug APK for distribution. Debug APK is
+only for local testing and is signed with a debug key.
+
 
 1. Install WSL2 Ubuntu
 ----------------------
@@ -92,8 +161,11 @@ If the laptop has less than 16 GB RAM, reduce Gradle heap:
     sed -i 's/-Xmx4096m/-Xmx2048m/' gradle.properties
 
 
-7. Build debug APK
-------------------
+7. Optional: build debug APK
+----------------------------
+
+Skip this for a public/user release. Debug APK is only for local testing
+and cannot replace a release APK installed on a user's phone.
 
     ./gradlew :app:assembleDebug --no-daemon --max-workers=2
 
@@ -105,9 +177,20 @@ Debug APK output directory:
 8. Build release APK
 --------------------
 
-Create a release keystore:
+For a new app with no previous releases, create a release keystore:
 
     ./scripts/create-safarvpn-keystore.sh
+
+For an update of the existing SafarVPN app, copy the old keystore instead:
+
+    cp -a ~/wdtt-safar-old/keystore ./keystore
+
+or, if the old project was renamed:
+
+    cp -a ~/wdtt-safar-oldbutgold/keystore ./keystore
+
+Then load signing variables:
+
     set -a
     source keystore/safarvpn-signing.env
     set +a
