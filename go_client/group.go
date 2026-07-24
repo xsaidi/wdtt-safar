@@ -17,6 +17,29 @@ const (
 	defaultCycleSecs = 36000
 )
 
+func workerErrorHint(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "obfs: auth"):
+		return "WRAP: проверьте пароль профиля и сервера"
+	case strings.Contains(message, "obfs: not rtp v2"),
+		strings.Contains(message, "obfs: packet too short"):
+		return "WRAP: relay вернул не RTP-поток; попробуйте переподключиться"
+	case strings.Contains(message, "turn квота"),
+		strings.Contains(message, "quota"),
+		strings.Contains(message, "486"):
+		return "TURN: квота relay исчерпана, уменьшите число потоков"
+	case strings.Contains(message, "подключение turn udp"),
+		strings.Contains(message, "резолв turn"):
+		return "TURN: проверьте сеть и DNS"
+	}
+	return ""
+}
+
 // WorkerGroup:
 // Запускает 9 потоков с одними кредами. Ротации нет — работает до смерти воркеров.
 func WorkerGroup(
@@ -304,5 +327,4 @@ type Credentials struct {
 	TurnURLs      []string
 	CacheStreamID int
 }
-
 
