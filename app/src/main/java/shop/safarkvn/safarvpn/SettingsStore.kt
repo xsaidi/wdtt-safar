@@ -94,8 +94,6 @@ class SettingsStore(context: Context) {
         // ═══ VPN Exclusions Mode ═══
         private val IS_WHITELIST = booleanPreferencesKey("is_whitelist")
         private val SPLIT_TUNNEL_WHITELIST_MIGRATED = booleanPreferencesKey("split_tunnel_whitelist_migrated")
-        /** Российские IPv4-подсети не идут через WireGuard (AllowedIPs без RU). */
-        private val RUNET_DIRECT = booleanPreferencesKey("runet_direct")
 
         // ═══ Theme Mode ═══
         private val THEME_MODE = stringPreferencesKey("theme_mode") // "system", "light", "dark"
@@ -353,7 +351,6 @@ class SettingsStore(context: Context) {
 
     // ═══ VPN Exclusions Mode ═══
     val isWhitelist: Flow<Boolean> = dataStore.data.map { it[IS_WHITELIST] ?: false }
-    val runetDirect: Flow<Boolean> = dataStore.data.map { it[RUNET_DIRECT] ?: false }
 
     // ═══ Theme Mode ═══
     val hasSeenWelcomeDialog: Flow<Boolean> = dataStore.data
@@ -692,11 +689,6 @@ class SettingsStore(context: Context) {
                 prefs[CAPTCHA_SOLVE_METHOD] = method
             }
         }
-    }
-
-    // Атомарное сохранение обоих параметров для исключения гонки при перезагрузке
-    suspend fun saveRunetDirect(enabled: Boolean) {
-        dataStore.edit { prefs -> prefs[RUNET_DIRECT] = enabled }
     }
 
     suspend fun saveExceptionsMode(packages: String, isWhitelist: Boolean) {

@@ -106,15 +106,10 @@ class WireGuardHelper(context: Context) {
                 if (peer.endpoint.isPresent) peerBuilder.parseEndpoint(peer.endpoint.get().toString())
                 if (peer.persistentKeepalive.isPresent) peerBuilder.parsePersistentKeepalive(peer.persistentKeepalive.get().toString())
             }
-            val runetDirect = settingsStore.runetDirect.first()
-            val allowedIps = if (runetDirect) {
-                RunetDirectHelper.allowedIpsV4(appContext)
-            } else {
-                "0.0.0.0/0"
-            }
+            val allowedIps = "0.0.0.0/0"
             peerBuilder.parseAllowedIPs(allowedIps)
 
-            var finalConfig = Config.Builder()
+            val finalConfig = Config.Builder()
                 .setInterface(newInterface)
                 .addPeer(peerBuilder.build())
                 .build()
@@ -122,31 +117,7 @@ class WireGuardHelper(context: Context) {
             disabledByEmptyWhitelist = false
             stopSharedTunnel("previous tunnel before restart")
             val nextTunnel = WgTunnel()
-            try {
-                setTunnelUpWithRetry(nextTunnel, finalConfig)
-            } catch (e: Exception) {
-                // Binder ~1MB: слишком длинный AllowedIPs → откат на полный туннель.
-                if (runetDirect && e.isTransactionTooLarge()) {
-                    Log.w("WG", "Runet direct AllowedIPs too large for Binder, falling back to 0.0.0.0/0")
-                    val fallbackPeer = Peer.Builder()
-                    firstPeer.let { peer ->
-                        fallbackPeer.parsePublicKey(peer.publicKey.toBase64())
-                        if (peer.preSharedKey.isPresent) fallbackPeer.parsePreSharedKey(peer.preSharedKey.get().toBase64())
-                        if (peer.endpoint.isPresent) fallbackPeer.parseEndpoint(peer.endpoint.get().toString())
-                        if (peer.persistentKeepalive.isPresent) {
-                            fallbackPeer.parsePersistentKeepalive(peer.persistentKeepalive.get().toString())
-                        }
-                    }
-                    fallbackPeer.parseAllowedIPs("0.0.0.0/0")
-                    finalConfig = Config.Builder()
-                        .setInterface(newInterface)
-                        .addPeer(fallbackPeer.build())
-                        .build()
-                    setTunnelUpWithRetry(nextTunnel, finalConfig)
-                } else {
-                    throw e
-                }
-            }
+            setTunnelUpWithRetry(nextTunnel, finalConfig)
             sharedTunnel = nextTunnel
             Log.d("WG", "WireGuard tunnel started successfully")
         } catch (e: Exception) {
