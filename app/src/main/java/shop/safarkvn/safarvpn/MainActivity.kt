@@ -6,11 +6,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -26,6 +26,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.Icons
@@ -33,14 +34,12 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.FilterList
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.*
@@ -51,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -68,20 +68,52 @@ import shop.safarkvn.safarvpn.ui.LogsTab
 import shop.safarkvn.safarvpn.ui.SettingsTab
 import shop.safarkvn.safarvpn.ui.DeployTab
 import shop.safarkvn.safarvpn.ui.ExceptionsTab
+import kotlinx.coroutines.flow.first
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
 
-    private val vpnLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        // VPN permission dialog finished
-    }
-
     private val batteryLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        checkAndRequestVpn()
+        // Диалог оптимизации батареи закрыт — VPN-разрешение запрашиваем только при подключении.
     }
 
     private val notificationLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         checkAndRequestBattery()
+    }
+
+    /**
+     * VPN consent живёт на Activity, а не во вкладке Settings:
+     * иначе при auto-switch на «Логи» launcher снимается и после «Разрешить» старт зависает.
+     */
+    @Volatile
+    private var pendingAfterVpnGranted: (() -> Unit)? = null
+
+    private val vpnPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val cont = pendingAfterVpnGranted
+        pendingAfterVpnGranted = null
+        if (cont == null) return@registerForActivityResult
+        if (android.net.VpnService.prepare(this) == null) {
+            cont()
+        } else {
+            TunnelManager.cancelConnectingIfNeeded()
+            Toast.makeText(this, "VPN-разрешение не выдано", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun prepareVpnThen(onGranted: () -> Unit) {
+        val vpnIntent = android.net.VpnService.prepare(this)
+        if (vpnIntent != null) {
+            pendingAfterVpnGranted = onGranted
+            vpnPermissionLauncher.launch(vpnIntent)
+        } else {
+            onGranted()
+        }
     }
 
     companion object {
@@ -94,7 +126,10 @@ class MainActivity : ComponentActivity() {
         var currentActivity: MainActivity? = null
 
         // URI файла .qwdtt, ожидающего импорта
-        val pendingFileUri = mutableStateOf<android.net.Uri?>(null)
+        val pendingFileUri = mutableStateOf<Uri?>(null)
+
+        // Открыть экран создания профиля из ярлыка лаунчера
+        val pendingAddProfile = mutableStateOf(false)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -104,10 +139,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
-        if (intent?.action == Intent.ACTION_VIEW) {
-            val uri = intent.data
-            if (uri != null) {
-                pendingFileUri.value = uri
+        when (intent?.action) {
+            AppShortcuts.ACTION_ADD_PROFILE -> {
+                pendingAddProfile.value = true
+            }
+            Intent.ACTION_VIEW -> {
+                val uri = intent.data
+                if (uri != null) {
+                    pendingFileUri.value = uri
+                }
             }
         }
     }
@@ -166,6 +206,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndRequestNotifications() {
+        NotificationHelper.ensureTunnelChannel(this)
         if (Build.VERSION.SDK_INT >= 33) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -177,57 +218,48 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    fun openNotificationSettings() {
+        NotificationHelper.openAppNotificationSettings(this)
+    }
+
     private fun checkAndRequestBattery() {
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
         if (!pm.isIgnoringBatteryOptimizations(packageName)) {
             try {
                 val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                     data = Uri.parse("package:$packageName")
                 }
                 batteryLauncher.launch(intent)
-            } catch (e: Exception) {
-                checkAndRequestVpn()
+            } catch (_: Exception) {
+                // Не удалось показать диалог — пропускаем.
             }
-        } else {
-            checkAndRequestVpn()
-        }
-    }
-
-    private fun checkAndRequestVpn() {
-        try {
-            val vpnIntent = VpnService.prepare(this)
-            if (vpnIntent != null) {
-                vpnLauncher.launch(vpnIntent)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
     }
 }
 
 // ═══ Навигация ═══
 
-private enum class MainTab {
-    TUNNEL,
-    DEPLOY,
-    PROFILES,
-    EXCEPTIONS,
-    LOGS
-}
-
 private data class NavItem(
-    val tab: MainTab,
+    val id: Int,
     val label: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector,
 )
 
-private val allNavItems = listOf(
-    NavItem(MainTab.TUNNEL, "Туннель", Icons.Filled.VpnKey, Icons.Outlined.VpnKey),
-    NavItem(MainTab.DEPLOY, "Деплой", Icons.Filled.Cloud, Icons.Outlined.Cloud),
-    NavItem(MainTab.PROFILES, "Профили", Icons.Filled.FolderOpen, Icons.Outlined.Folder),
-    NavItem(MainTab.EXCEPTIONS, "Обход", Icons.Filled.FilterList, Icons.Outlined.FilterList),
-    NavItem(MainTab.LOGS, "Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
+private val navItems = listOf(
+    NavItem(0, "Туннель", Icons.Filled.VpnKey, Icons.Outlined.VpnKey),
+    NavItem(1, "Деплой", Icons.Filled.Cloud, Icons.Outlined.Cloud),
+    NavItem(2, "Профили", Icons.Filled.FolderOpen, Icons.Outlined.Folder),
+    NavItem(3, "Обход", Icons.Filled.FilterList, Icons.Outlined.FilterList),
+    NavItem(4, "Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -243,38 +275,107 @@ fun MainScreen(
 ) {
     val unreadErrors by TunnelManager.unreadErrorCount.collectAsStateWithLifecycle()
     val tunnelRunning by TunnelManager.running.collectAsStateWithLifecycle()
-    val showBlockerWarning by TunnelManager.showBlockerWarning.collectAsStateWithLifecycle()
+    val openAppSettingsRequest by TunnelManager.openAppSettingsRequest.collectAsStateWithLifecycle()
     val hasSeenWelcomeDialog by settingsStore.hasSeenWelcomeDialog.collectAsStateWithLifecycle(initialValue = true)
     val view = LocalView.current
     val context = LocalContext.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    var selectedTabName by rememberSaveable { mutableStateOf(MainTab.TUNNEL.name) }
-    var adminModeEnabled by rememberSaveable { mutableStateOf(false) }
-    val navItems = remember(adminModeEnabled) {
-        if (adminModeEnabled) allNavItems else allNavItems.filterNot { it.tab == MainTab.DEPLOY }
-    }
-    val selectedTab = runCatching { MainTab.valueOf(selectedTabName) }.getOrDefault(MainTab.TUNNEL)
-    val selectedTabIndex = navItems.indexOfFirst { it.tab == selectedTab }.takeIf { it >= 0 } ?: 0
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var dragTargetIndex by remember { mutableIntStateOf(-1) }
     var dragProgress by remember { mutableFloatStateOf(0f) }
+    val interfaceRole by settingsStore.interfaceRole.collectAsStateWithLifecycle(initialValue = "user")
+    val isAdminInterface = interfaceRole == "admin"
+    val autoSwitchToLogs by settingsStore.autoSwitchToLogs.collectAsStateWithLifecycle(initialValue = true)
+    var pendingSwitchToLogs by remember { mutableStateOf(false) }
+    val activeNavItems = remember(isAdminInterface) {
+        navItems.filter { isAdminInterface || it.id != 1 }
+    }
     val safeBottomInset = with(density) { WindowInsets.safeDrawing.getBottom(density).toDp() }
     val navOverlayReserve = safeBottomInset + 96.dp
 
     LaunchedEffect(selectedTab) {
-        if (selectedTab == MainTab.LOGS) TunnelManager.clearUnreadErrors()
+        if (selectedTab == 4) TunnelManager.clearUnreadErrors()
     }
 
-    LaunchedEffect(adminModeEnabled, selectedTab) {
-        if (!adminModeEnabled && selectedTab == MainTab.DEPLOY) {
-            selectedTabName = MainTab.TUNNEL.name
+    LaunchedEffect(pendingSwitchToLogs, autoSwitchToLogs) {
+        if (pendingSwitchToLogs && autoSwitchToLogs) {
+            pendingSwitchToLogs = false
+            selectedTab = 4
+        }
+    }
+
+    LaunchedEffect(activeNavItems, selectedTab) {
+        if (activeNavItems.none { it.id == selectedTab }) {
+            selectedTab = activeNavItems.firstOrNull()?.id ?: 0
+        }
+    }
+
+    LaunchedEffect(openAppSettingsRequest) {
+        if (openAppSettingsRequest > 0L) {
+            selectedTab = 0
         }
     }
 
     val pendingFileUri = MainActivity.pendingFileUri.value
     LaunchedEffect(pendingFileUri) {
         if (pendingFileUri != null) {
-            selectedTabName = MainTab.PROFILES.name
+            selectedTab = 2
+        }
+    }
+
+    val pendingAddProfile = MainActivity.pendingAddProfile.value
+    var requestCreateProfile by remember { mutableStateOf(false) }
+    LaunchedEffect(pendingAddProfile) {
+        if (pendingAddProfile) {
+            selectedTab = 2
+            requestCreateProfile = true
+            MainActivity.pendingAddProfile.value = false
+        }
+    }
+
+    // Тихое автообновление подписок при открытии (не во время туннеля).
+    LaunchedEffect(Unit) {
+        val intervalHours = settingsStore.subscriptionAutoRefreshHours.first()
+        if (intervalHours == SettingsStore.SUB_AUTO_REFRESH_NEVER) return@LaunchedEffect
+        if (TunnelManager.running.value) return@LaunchedEffect
+
+        val profilesStore = ProfilesStore(context)
+        val result = runCatching {
+            profilesStore.autoRefreshSubscriptionsIfDue(intervalHours)
+        }.getOrElse {
+            Log.w("WDTT", "Subscription auto-refresh failed: ${it.message}")
+            null
+        } ?: return@LaunchedEffect
+
+        if (result.refreshedOk == 0 && result.failed == 0) return@LaunchedEffect
+
+        Log.i(
+            "WDTT",
+            "Subscription auto-refresh: ok=${result.refreshedOk} fail=${result.failed} skipped=${result.skippedFresh}"
+        )
+        when {
+            result.failed > 0 && result.refreshedOk == 0 -> {
+                Toast.makeText(
+                    context,
+                    "Не удалось обновить подписки",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            result.failed > 0 -> {
+                Toast.makeText(
+                    context,
+                    "Подписки: обновлено ${result.refreshedOk}, ошибок ${result.failed}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            result.refreshedOk > 0 -> {
+                Toast.makeText(
+                    context,
+                    "Подписки обновлены (${result.refreshedOk})",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 
@@ -290,7 +391,7 @@ fun MainScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .consumeWindowInsets(padding)
-                    .pointerInput(selectedTabIndex, navItems.size) {
+                    .pointerInput(selectedTab, activeNavItems) {
                         var totalDrag = 0f
                         detectHorizontalDragGestures(
                             onDragStart = {
@@ -303,10 +404,9 @@ fun MainScreen(
                                 dragProgress = 0f
                             },
                             onDragEnd = {
-                                if (dragTargetIndex in navItems.indices && dragProgress >= 0.5f) {
-                                    val targetTab = navItems[dragTargetIndex].tab
-                                    selectedTabName = targetTab.name
-                                    if (targetTab == MainTab.LOGS) TunnelManager.clearUnreadErrors()
+                                if (dragTargetIndex in activeNavItems.indices && dragProgress >= 0.5f) {
+                                    selectedTab = activeNavItems[dragTargetIndex].id
+                                    if (selectedTab == 4) TunnelManager.clearUnreadErrors()
                                 }
                                 dragTargetIndex = -1
                                 dragProgress = 0f
@@ -320,8 +420,9 @@ fun MainScreen(
                                 return@detectHorizontalDragGestures
                             }
 
-                            val candidate = if (totalDrag < 0f) selectedTabIndex + 1 else selectedTabIndex - 1
-                            if (candidate !in navItems.indices) {
+                            val currentActiveIndex = activeNavItems.indexOfFirst { it.id == selectedTab }
+                            val candidate = if (totalDrag < 0f) currentActiveIndex + 1 else currentActiveIndex - 1
+                            if (candidate !in activeNavItems.indices) {
                                 dragTargetIndex = -1
                                 dragProgress = 0f
                                 return@detectHorizontalDragGestures
@@ -340,41 +441,42 @@ fun MainScreen(
                     label = "tab_content"
                 ) { tab ->
                     when (tab) {
-                        MainTab.TUNNEL -> SettingsTab(
+                        0 -> SettingsTab(
                             themeMode = themeMode,
                             onThemeChange = onThemeChange,
                             isDynamicColor = isDynamicColor,
                             onDynamicColorChange = onDynamicColorChange,
                             currentPalette = currentPalette,
                             onPaletteChange = onPaletteChange,
-                            onNavigateToLogs = { selectedTabName = MainTab.LOGS.name },
-                            adminModeEnabled = adminModeEnabled,
-                            onAdminModeChange = { adminModeEnabled = it }
+                            onConnectRequested = { pendingSwitchToLogs = true },
+                            onOpenProfiles = { selectedTab = 2 },
                         )
-                        MainTab.DEPLOY -> DeployTab()
-                        MainTab.PROFILES -> ProfilesTab(
-                            onProfileApplied = { selectedTabName = MainTab.TUNNEL.name },
+                        1 -> DeployTab()
+                        2 -> ProfilesTab(
+                            onProfileApplied = { selectedTab = 0 },
                             importFileUri = MainActivity.pendingFileUri.value,
-                            onImportHandled = { MainActivity.pendingFileUri.value = null }
+                            onImportHandled = { MainActivity.pendingFileUri.value = null },
+                            requestCreateProfile = requestCreateProfile,
+                            onCreateProfileHandled = { requestCreateProfile = false }
                         )
-                        MainTab.EXCEPTIONS -> ExceptionsTab()
-                        MainTab.LOGS -> LogsTab()
+                        3 -> ExceptionsTab()
+                        4 -> LogsTab()
                     }
                 }
 
                 ProxyNavigationBar(
-                    navItems = navItems,
-                    selectedTab = selectedTabIndex,
+                    navItems = activeNavItems,
+                    selectedTab = selectedTab,
                     dragTargetIndex = dragTargetIndex,
                     dragProgress = dragProgress,
                     unreadErrors = unreadErrors,
                     tunnelRunning = tunnelRunning,
-                    onTabSelected = { index ->
-                        val targetTab = navItems.getOrNull(index)?.tab ?: return@ProxyNavigationBar
-                        if (selectedTab != targetTab) {
+                    onTabSelected = { visualIndex ->
+                        val tabId = activeNavItems.getOrNull(visualIndex)?.id ?: return@ProxyNavigationBar
+                        if (selectedTab != tabId) {
                             view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
-                            selectedTabName = targetTab.name
-                            if (targetTab == MainTab.LOGS) TunnelManager.clearUnreadErrors()
+                            selectedTab = tabId
+                            if (tabId == 4) TunnelManager.clearUnreadErrors()
                         }
                         dragTargetIndex = -1
                         dragProgress = 0f
@@ -399,16 +501,16 @@ fun MainScreen(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "Подписка покупается и продлевается в Telegram-боте SafarVPN:",
+                        "Вы можете получить готовые конфиги напрямую в этих Telegram-ботах:",
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
                             onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/safarvpn_bot"))
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/darkbit_vpnbot"))
                                 context.startActivity(intent)
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -419,16 +521,62 @@ fun MainScreen(
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(vertical = 10.dp)
                         ) {
-                            Text("@safarvpn_bot", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                "🤖 @darkbit_vpnbot",
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/sidylinkbot"))
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp)
+                        ) {
+                            Text(
+                                "🤖 @sidylinkbot",
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelMedium
+                            )
                         }
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Обновления приложения приходят через Telegram-бот @safarvpn_bot.",
-                        style = MaterialTheme.typography.bodyMedium
+                        "Следите за обновлениями",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        "Скопируйте JSON-ссылку подписки из бота и импортируйте ее на вкладке «Профили». Эта памятка также доступна в настройках.",
+                        "Все дальнейшие обновления и новости мы будем публиковать в нашем канале:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(AppLinks.TELEGRAM_CHANNEL))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(vertical = 10.dp)
+                    ) {
+                        Text("📢 @darkbitVPN", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Text(
+                        "Просто скопируйте текст профиля или конфигурационный файл и импортируйте его на вкладке «Профили». Эта памятка также доступна в настройках.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -444,53 +592,6 @@ fun MainScreen(
         )
     }
 
-    if (showBlockerWarning) {
-        var dontShowAgain by rememberSaveable { mutableStateOf(false) }
-        AlertDialog(
-            onDismissRequest = { TunnelManager.showBlockerWarning.value = false },
-            title = { Text("Внимание", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text("Не используйте приложение, если белые списки не включены, так как это негативно влияет на способ обхода.")
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { dontShowAgain = !dontShowAgain }
-                    ) {
-                        Checkbox(
-                            checked = dontShowAgain,
-                            onCheckedChange = { dontShowAgain = it }
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Больше не показывать", style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { 
-                        TunnelManager.showBlockerWarning.value = false
-                        scope.launch {
-                            settingsStore.saveHideBlockerWarning(dontShowAgain)
-                        }
-                        context.startService(Intent(context, TunnelService::class.java).apply {
-                            action = "START_FORCED"
-                        })
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Всё равно подключиться", color = MaterialTheme.colorScheme.onError)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { TunnelManager.showBlockerWarning.value = false }) {
-                    Text("Отмена")
-                }
-            },
-            shape = RoundedCornerShape(24.dp)
-        )
-    }
 }
 
 @SuppressLint("UnusedBoxWithConstraintsScope")
@@ -524,13 +625,14 @@ private fun ProxyNavigationBar(
     } else {
         lerp(colors.primaryContainer, colors.surface, 0.18f).copy(alpha = 0.97f)
     }
-    val indicatorIndex = remember { Animatable(selectedTab.toFloat()) }
+    val indicatorIndex = remember { Animatable(0f) }
+    val selectedVisualIndex = navItems.indexOfFirst { it.id == selectedTab }.coerceAtLeast(0)
     val dragVisualIndex = indicatorIndex.value
 
-    LaunchedEffect(selectedTab) {
+    LaunchedEffect(selectedVisualIndex, navItems) {
         if (dragTargetIndex !in navItems.indices) {
             indicatorIndex.animateTo(
-                targetValue = selectedTab.toFloat(),
+                targetValue = selectedVisualIndex.toFloat(),
                 animationSpec = tween(
                     durationMillis = 720,
                     easing = CubicBezierEasing(0.2f, 0.9f, 0.24f, 1f)
@@ -539,9 +641,9 @@ private fun ProxyNavigationBar(
         }
     }
 
-    LaunchedEffect(selectedTab, dragTargetIndex, dragProgress) {
+    LaunchedEffect(selectedVisualIndex, dragTargetIndex, dragProgress, navItems) {
         if (dragTargetIndex in navItems.indices) {
-            val target = selectedTab.toFloat() + (dragTargetIndex - selectedTab) * dragProgress
+            val target = selectedVisualIndex.toFloat() + (dragTargetIndex - selectedVisualIndex) * dragProgress
             indicatorIndex.snapTo(target)
         }
     }
@@ -604,7 +706,7 @@ private fun ProxyNavigationBar(
                                     modifier = Modifier.size(22.dp),
                                     tint = iconColor
                                 )
-                                if (item.tab == MainTab.LOGS && unreadErrors > 0) {
+                                if (item.id == 4 && unreadErrors > 0) {
                                     Badge(
                                         containerColor = if (tunnelRunning) colors.primary else WDTTColors.warning,
                                         contentColor = colors.onPrimary,
@@ -633,6 +735,37 @@ private fun ProxyNavigationBar(
     }
 }
 
+private fun openReleaseUrl(context: Context, url: String) {
+    try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            addCategory(Intent.CATEGORY_BROWSABLE)
+        }
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        Toast.makeText(context, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun android16OrbShape(points: Int, innerRatio: Float): Shape = GenericShape { size, _ ->
+    val centerX = size.width / 2f
+    val centerY = size.height / 2f
+    val outerRadius = min(size.width, size.height) / 2f
+    val innerRadius = outerRadius * innerRatio
+
+    for (i in 0 until points * 2) {
+        val angle = (-PI / 2.0) + (i * PI / points)
+        val radius = if (i % 2 == 0) outerRadius else innerRadius
+        val x = centerX + (radius * cos(angle)).toFloat()
+        val y = centerY + (radius * sin(angle)).toFloat()
+        if (i == 0) moveTo(x, y) else lineTo(x, y)
+    }
+    close()
+}
+
+private val Android16OrbLarge: Shape = android16OrbShape(points = 18, innerRatio = 0.90f)
+private val Android16OrbMedium: Shape = android16OrbShape(points = 20, innerRatio = 0.92f)
+private val Android16OrbSmall: Shape = android16OrbShape(points = 16, innerRatio = 0.88f)
+
 @Composable
 private fun AppBackdrop(modifier: Modifier = Modifier) {
     val colors = MaterialTheme.colorScheme
@@ -654,10 +787,61 @@ private fun AppBackdrop(modifier: Modifier = Modifier) {
             }
         )
     }
+    val topGlow = colors.primary.copy(alpha = if (isDark) 0.055f else 0.09f)
+    val leftGlow = if (isDark) {
+        colors.tertiary.copy(alpha = 0.045f)
+    } else {
+        lerp(colors.tertiary, colors.secondaryContainer, 0.74f).copy(alpha = 0.24f)
+    }
+    val bottomGlow = if (isDark) {
+        colors.primary.copy(alpha = 0.04f)
+    } else {
+        lerp(colors.secondary, colors.primaryContainer, 0.70f).copy(alpha = 0.22f)
+    }
+    val lightOrbOutline = colors.outlineVariant.copy(alpha = 0.26f)
+    val topOrbGlow = if (isDark) {
+        topGlow
+    } else {
+        lerp(colors.primary, colors.primaryContainer, 0.72f).copy(alpha = 0.32f)
+    }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(baseBrush)
-    )
+    ) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .offset(x = (-86).dp, y = (-126).dp)
+                .size(258.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(topOrbGlow)
+                .then(
+                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline, androidx.compose.foundation.shape.CircleShape)
+                )
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset(x = (-44).dp, y = 28.dp)
+                .size(146.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(leftGlow)
+                .then(
+                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline.copy(alpha = 0.22f), androidx.compose.foundation.shape.CircleShape)
+                )
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = 62.dp, y = (-208).dp)
+                .size(198.dp)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(bottomGlow)
+                .then(
+                    if (isDark) Modifier else Modifier.border(1.dp, lightOrbOutline.copy(alpha = 0.20f), androidx.compose.foundation.shape.CircleShape)
+                )
+        )
+    }
 }

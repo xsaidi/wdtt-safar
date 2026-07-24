@@ -24,6 +24,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -131,7 +132,9 @@ import androidx.compose.ui.platform.LocalDensity
 fun ProfilesTab(
     onProfileApplied: () -> Unit = {},
     importFileUri: android.net.Uri? = null,
-    onImportHandled: () -> Unit = {}
+    onImportHandled: () -> Unit = {},
+    requestCreateProfile: Boolean = false,
+    onCreateProfileHandled: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -149,6 +152,13 @@ fun ProfilesTab(
     val snackbarHostState = remember { SnackbarHostState() }
     var groupToExport by remember { mutableStateOf<ProfileGroup?>(null) }
     val globalHashes by settingsStore.globalVkHashes.collectAsStateWithLifecycle(initialValue = "")
+
+    LaunchedEffect(requestCreateProfile) {
+        if (requestCreateProfile) {
+            showCreateSheet = true
+            onCreateProfileHandled()
+        }
+    }
 
     val pingResults = shop.safarkvn.safarvpn.PingHelper.pingResults
     val pingingState = shop.safarkvn.safarvpn.PingHelper.pingingState
@@ -299,7 +309,7 @@ fun ProfilesTab(
         }
     }
 
-    var sortByPing by rememberSaveable { mutableStateOf(false) }
+    val sortByPing by settingsStore.sortProfilesByPing.collectAsStateWithLifecycle(initialValue = false)
     val displayProfiles = remember(profiles, pingResults.toMap(), sortByPing) {
         if (sortByPing) {
             profiles.sortedWith(compareBy<ConnectionProfile> {
@@ -338,7 +348,6 @@ fun ProfilesTab(
     var scannedProfile by remember { mutableStateOf<ConnectionProfile?>(null) }
     var scannedMultipleProfiles by remember { mutableStateOf<ParsedSubscription?>(null) }
     var showFormatsInfoDialog by rememberSaveable { mutableStateOf(false) }
-    var smartImportBusy by remember { mutableStateOf(false) }
     var deviceStatuses by remember { mutableStateOf<Map<String, ProfileDeviceStatus>>(emptyMap()) }
     var unbindTarget by remember { mutableStateOf<ConnectionProfile?>(null) }
     var unbindOnlyCurrent by remember { mutableStateOf(true) }
@@ -378,99 +387,6 @@ fun ProfilesTab(
         }
     }
 
-    fun showParsedImport(parsed: ParsedSubscription) {
-        if (parsed.profiles.size == 1) {
-            scannedProfile = parsed.profiles.first()
-        } else {
-            scannedMultipleProfiles = parsed
-        }
-    }
-
-    fun importRawText(rawText: String) {
-        val trimmed = rawText.trim()
-        if (trimmed.isEmpty()) {
-            Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        scope.launch {
-            if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
-                if (smartImportBusy) return@launch
-                smartImportBusy = true
-                val result = profilesStore.addSubscription(trimmed)
-                smartImportBusy = false
-                result.fold(
-                    onSuccess = {
-                        Toast.makeText(context, "Подписка «${it.name}» добавлена", Toast.LENGTH_SHORT).show()
-                        if (it.groupId.isNotBlank()) selectedFilterGroup = it.groupId
-                    },
-                    onFailure = { e ->
-                        Toast.makeText(context, "Ошибка подписки: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                )
-                return@launch
-            }
-
-            val parsed = parseMultipleConfigs(trimmed)
-            if (parsed != null) {
-                showParsedImport(parsed)
-                Toast.makeText(context, "Конфигурация успешно прочитана", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(
-                    context,
-                    "Неизвестный формат. Скопируйте HTTPS-ссылку из @safarvpn_bot",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-    }
-
-    fun importFromClipboard() {
-        try {
-            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            val clipData = clipboard.primaryClip
-            if (clipData != null && clipData.itemCount > 0) {
-                val item = clipData.getItemAt(0)
-                val text = item.coerceToText(context)?.toString().orEmpty()
-                importRawText(text)
-            } else {
-                Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(context, "Не удалось прочитать буфер: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    fun scanQrCode() {
-        try {
-            val activity = run {
-                val currentAct = shop.safarkvn.safarvpn.MainActivity.currentActivity
-                if (currentAct != null) return@run currentAct
-                var c = context
-                while (c is android.content.ContextWrapper) {
-                    if (c is android.app.Activity) return@run c
-                    c = c.baseContext
-                }
-                context
-            }
-            val scanner = com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(activity)
-            scanner.startScan()
-                .addOnSuccessListener { barcode ->
-                    importRawText(barcode.rawValue.orEmpty())
-                }
-                .addOnFailureListener { e ->
-                    Toast.makeText(context, "Ошибка сканирования: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-        } catch (e: Exception) {
-            val msg = e.message ?: "неизвестная ошибка"
-            if (msg.contains("null", ignoreCase = true) || msg.contains("NullPointerException", ignoreCase = true)) {
-                Toast.makeText(context, "Не удалось запустить сканер: отсутствует или отключен Google Play Services", Toast.LENGTH_LONG).show()
-            } else {
-                Toast.makeText(context, "Не удалось запустить сканер: $msg", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
     // Лаунчер системного выборщика файлов
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -478,7 +394,16 @@ fun ProfilesTab(
         if (uri != null) {
             try {
                 val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-                importRawText(text)
+                val parsed = parseMultipleConfigs(text)
+                if (parsed != null) {
+                    if (parsed.profiles.size == 1) {
+                        scannedProfile = parsed.profiles.first()
+                    } else {
+                        scannedMultipleProfiles = parsed
+                    }
+                } else {
+                    Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_LONG).show()
+                }
             } catch (e: Exception) {
                 Toast.makeText(context, "Ошибка чтения файла: ${e.message}", Toast.LENGTH_SHORT).show()
             }
@@ -490,25 +415,20 @@ fun ProfilesTab(
         val uri = importFileUri ?: return@LaunchedEffect
         try {
             val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-            importRawText(text)
+            val parsed = parseMultipleConfigs(text)
+            if (parsed != null) {
+                if (parsed.profiles.size == 1) {
+                    scannedProfile = parsed.profiles.first()
+                } else {
+                    scannedMultipleProfiles = parsed
+                }
+            } else {
+                Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_LONG).show()
+            }
         } catch (e: Exception) {
             Toast.makeText(context, "Ошибка чтения файла: ${e.message}", Toast.LENGTH_SHORT).show()
         }
         onImportHandled()
-    }
-
-    fun refreshProfileDeviceStatus(profile: ConnectionProfile) {
-        val androidId = android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: "unknown"
-        val dtlsPort = if (savedManualPortsEnabled) savedServerDtlsPort else 56000
-        deviceStatuses = deviceStatuses + (profile.id to (deviceStatuses[profile.id] ?: ProfileDeviceStatus()).copy(isLoading = true))
-        scope.launch {
-            val status = fetchProfileStatus(profile.peer, dtlsPort, profile.password, androidId)
-            if (status != null) {
-                deviceStatuses = deviceStatuses + (profile.id to status)
-            } else {
-                deviceStatuses = deviceStatuses + (profile.id to ProfileDeviceStatus(isError = true))
-            }
-        }
     }
 
     LaunchedEffect(profiles) {
@@ -665,7 +585,7 @@ fun ProfilesTab(
                     result.fold(
                         onSuccess = {
                             Toast.makeText(context, "Подписка «${it.name}» добавлена", Toast.LENGTH_SHORT).show()
-                            if (it.groupId.isNotBlank()) selectedFilterGroup = it.groupId
+                            selectedFilterGroup = it.groupId.ifBlank { selectedFilterGroup }
                             showAddSubscriptionDialog = false
                         },
                         onFailure = { e ->
@@ -821,7 +741,7 @@ fun ProfilesTab(
             onDismissRequest = { scannedProfile = null },
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.Icon(
+                    Icon(
                         imageVector = Icons.Filled.Download,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
@@ -865,7 +785,7 @@ fun ProfilesTab(
                             Row(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("⚠️", style = MaterialTheme.typography.bodyMedium)
                                 Text(
@@ -916,7 +836,7 @@ fun ProfilesTab(
             onDismissRequest = { scannedMultipleProfiles = null },
             icon = {
                 Icon(
-                    imageVector = androidx.compose.material.icons.Icons.Filled.Folder,
+                    imageVector = Icons.Filled.Folder,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(32.dp)
@@ -1036,8 +956,8 @@ fun ProfilesTab(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    androidx.compose.material3.Icon(
-                        imageVector = androidx.compose.material.icons.Icons.Default.Info,
+                    Icon(
+                        imageVector = Icons.Default.Info,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(24.dp)
@@ -1183,11 +1103,11 @@ fun ProfilesTab(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                androidx.compose.material3.IconButton(
+                IconButton(
                     onClick = { showFormatsInfoDialog = true },
                     modifier = Modifier.size(24.dp)
                 ) {
-                    androidx.compose.material3.Icon(
+                    Icon(
                         imageVector = Icons.Filled.Info,
                         contentDescription = "Справка",
                         tint = MaterialTheme.colorScheme.primary,
@@ -1197,35 +1117,37 @@ fun ProfilesTab(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
 
-                androidx.compose.material3.IconButton(
+                IconButton(
                     onClick = { pingAllProfiles(profiles) }
                 ) {
-                    androidx.compose.material3.Icon(
+                    Icon(
                         imageVector = Icons.Filled.SignalCellularAlt,
                         contentDescription = "Проверить пинг",
                         tint = MaterialTheme.colorScheme.primary
                     )
                 }
 
-                androidx.compose.material3.IconButton(
-                    onClick = { sortByPing = !sortByPing },
+                IconButton(
+                    onClick = {
+                        scope.launch { settingsStore.saveSortProfilesByPing(!sortByPing) }
+                    },
                     modifier = Modifier.background(
-                        color = if (sortByPing) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent,
+                        color = if (sortByPing) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
                         shape = androidx.compose.foundation.shape.CircleShape
                     )
                 ) {
-                    androidx.compose.material3.Icon(
+                    Icon(
                         imageVector = Icons.Filled.Sort,
                         contentDescription = "Сортировать по пингу",
                         tint = if (sortByPing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 
-                androidx.compose.foundation.layout.Box {
-                    androidx.compose.material3.IconButton(
+                Box {
+                    IconButton(
                         onClick = { showMoreMenu = true }
                     ) {
-                        androidx.compose.material3.Icon(
+                        Icon(
                             imageVector = Icons.Filled.MoreVert,
                             contentDescription = "Дополнительно",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1238,7 +1160,7 @@ fun ProfilesTab(
                         DropdownMenuItem(
                             text = { Text("Управление папками") },
                             leadingIcon = {
-                                androidx.compose.material3.Icon(
+                                Icon(
                                     Icons.Filled.Folder,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary
@@ -1354,7 +1276,7 @@ fun ProfilesTab(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    androidx.compose.material3.Icon(
+                    Icon(
                         imageVector = Icons.Filled.Folder,
                         contentDescription = null,
                         modifier = Modifier.size(64.dp),
@@ -1387,8 +1309,8 @@ fun ProfilesTab(
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                androidx.compose.material3.Icon(
-                                    imageVector = androidx.compose.material.icons.Icons.Default.Info,
+                                Icon(
+                                    imageVector = Icons.Default.Info,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(20.dp)
@@ -1403,31 +1325,58 @@ fun ProfilesTab(
                             }
                             
                             Text(
-                            "Получите JSON-ссылку подписки в Telegram-боте SafarVPN:",
+                                "Вы можете получить готовые профили напрямую в этих Telegram-ботах:",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
                             )
 
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Button(
                                     onClick = {
-                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(SAFARVPN_BOT_URL))
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbit_vpnbot"))
                                         context.startActivity(intent)
                                     },
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                    colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.surface,
                                         contentColor = MaterialTheme.colorScheme.primary
                                     ),
-                                    elevation = androidx.compose.material3.ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
                                     shape = RoundedCornerShape(12.dp),
                                     contentPadding = PaddingValues(vertical = 10.dp)
                                 ) {
-                                    Text(SAFARVPN_BOT_HANDLE, maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                                    Text(
+                                        "🤖 @darkbit_vpnbot",
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+
+                                Button(
+                                    onClick = {
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/sidylinkbot"))
+                                        context.startActivity(intent)
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                                    shape = RoundedCornerShape(12.dp),
+                                    contentPadding = PaddingValues(vertical = 10.dp)
+                                ) {
+                                    Text(
+                                        "🤖 @sidylinkbot",
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
                                 }
                             }
                         }
@@ -1627,8 +1576,8 @@ fun ProfilesTab(
                                     if (pingMs != null) {
                                         val color = when {
                                             pingMs < 0 -> MaterialTheme.colorScheme.error
-                                            pingMs < 700 -> androidx.compose.ui.graphics.Color(0xFF4CAF50)
-                                            pingMs < 1000 -> androidx.compose.ui.graphics.Color(0xFFFFA000)
+                                            pingMs < 700 -> Color(0xFF4CAF50)
+                                            pingMs < 1000 -> Color(0xFFFFA000)
                                             else -> MaterialTheme.colorScheme.error
                                         }
                                         Box(modifier = Modifier.size(6.dp).clip(androidx.compose.foundation.shape.CircleShape).background(color))
@@ -1735,7 +1684,7 @@ fun ProfilesTab(
                                             color = MaterialTheme.colorScheme.primary
                                         )
                                     } else {
-                                        androidx.compose.material3.Icon(
+                                        Icon(
                                             imageVector = Icons.Filled.SignalCellularAlt,
                                             contentDescription = "Проверить пинг",
                                             modifier = Modifier.size(16.dp)
@@ -1753,8 +1702,8 @@ fun ProfilesTab(
                                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 ) {
-                                    androidx.compose.material3.Icon(
-                                        androidx.compose.material.icons.Icons.Filled.Folder,
+                                    Icon(
+                                        Icons.Filled.Folder,
                                         contentDescription = "В папку...",
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -1770,8 +1719,8 @@ fun ProfilesTab(
                                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 ) {
-                                    androidx.compose.material3.Icon(
-                                        androidx.compose.material.icons.Icons.Filled.Share,
+                                    Icon(
+                                        Icons.Filled.Share,
                                         contentDescription = "Поделиться",
                                         modifier = Modifier.size(16.dp)
                                     )
@@ -1787,7 +1736,7 @@ fun ProfilesTab(
                                         contentColor = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 ) {
-                                    androidx.compose.material3.Icon(
+                                    Icon(
                                         Icons.Filled.Edit,
                                         contentDescription = "Изменить",
                                         modifier = Modifier.size(16.dp)
@@ -1822,7 +1771,6 @@ fun ProfilesTab(
                 }
             }
         }
-        }
         if (profiles.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(
@@ -1833,46 +1781,19 @@ fun ProfilesTab(
             )
         }
     }
-
+}
+        
     SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 92.dp))
 
-    Row(
-        modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Button(
-            onClick = { importFromClipboard() },
-            enabled = !smartImportBusy,
+    if (!isSubscriptionFilter) {
+        FloatingActionButton(
+            onClick = { showCreateSheet = true },
             modifier = Modifier
-                .weight(1f)
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp)
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+            containerColor = MaterialTheme.colorScheme.primary
         ) {
-            if (smartImportBusy) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 2.dp
-                )
-            } else {
-                Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-            }
-            Spacer(Modifier.width(8.dp))
-            Text("Вставить из буфера обмена", fontWeight = FontWeight.Bold, maxLines = 1)
-        }
-
-        if (!isSubscriptionFilter) {
-            FloatingActionButton(
-                onClick = { showCreateSheet = true },
-                containerColor = MaterialTheme.colorScheme.primary
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "Добавить")
-            }
+            Icon(Icons.Filled.Add, contentDescription = "Добавить")
         }
     }
     }
@@ -1993,7 +1914,28 @@ fun ProfilesTab(
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
                         showCreateSheet = false
-                        importFromClipboard()
+                        try {
+                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            val clipData = clipboard.primaryClip
+                            if (clipData != null && clipData.itemCount > 0) {
+                                val text = clipData.getItemAt(0).text?.toString() ?: ""
+                                val parsed = parseMultipleConfigs(text)
+                                if (parsed != null) {
+                                    if (parsed.profiles.size == 1) {
+                                        scannedProfile = parsed.profiles.first()
+                                    } else {
+                                        scannedMultipleProfiles = parsed
+                                    }
+                                    Toast.makeText(context, "Конфигурация успешно прочитана!", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(context, "В буфере обмена нет подходящей конфигурации", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                Toast.makeText(context, "Буфер обмена пуст", Toast.LENGTH_SHORT).show()
+                            }
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "Не удалось прочитать буфер: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
                     }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -2007,7 +1949,43 @@ fun ProfilesTab(
                 Row(
                     modifier = Modifier.fillMaxWidth().clickable {
                         showCreateSheet = false
-                        scanQrCode()
+                        try {
+                            val activity = run {
+                                val currentAct = shop.safarkvn.safarvpn.MainActivity.currentActivity
+                                if (currentAct != null) return@run currentAct
+                                var c = context
+                                while (c is android.content.ContextWrapper) {
+                                    if (c is android.app.Activity) return@run c
+                                    c = c.baseContext
+                                }
+                                context
+                            }
+                            val scanner = com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(activity)
+                            scanner.startScan()
+                                .addOnSuccessListener { barcode ->
+                                    val rawText = barcode.rawValue ?: ""
+                                    val parsed = parseMultipleConfigs(rawText)
+                                    if (parsed != null) {
+                                        if (parsed.profiles.size == 1) {
+                                            scannedProfile = parsed.profiles.first()
+                                        } else {
+                                            scannedMultipleProfiles = parsed
+                                        }
+                                    } else {
+                                        Toast.makeText(context, "Неверный формат QR-кода", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                                .addOnFailureListener { e ->
+                                    Toast.makeText(context, "Ошибка сканирования: ${e.message}", Toast.LENGTH_SHORT).show()
+                                }
+                        } catch (e: Exception) {
+                            val msg = e.message ?: "неизвестная ошибка"
+                            if (msg.contains("null", ignoreCase = true) || msg.contains("NullPointerException", ignoreCase = true)) {
+                                Toast.makeText(context, "Не удалось запустить сканер: отсутствует или отключен Google Play Services", Toast.LENGTH_LONG).show()
+                            } else {
+                                Toast.makeText(context, "Не удалось запустить сканер: $msg", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -2049,7 +2027,7 @@ private fun parseQrConfig(rawText: String): ConnectionProfile? {
                 val pass = parts[4]
                 val hash = parts.drop(5).joinToString(":")
                 return ConnectionProfile(
-                    id = java.util.UUID.randomUUID().toString(),
+                    id = UUID.randomUUID().toString(),
                     name = "WDTT $ip",
                     peer = "$ip:$dtlsPort",
                     vkHashes = hash,
@@ -2080,7 +2058,7 @@ private fun parseQrConfig(rawText: String): ConnectionProfile? {
             val port = uri.getQueryParameter("port")?.toIntOrNull() ?: 9000
             val pass = uri.getQueryParameter("pass") ?: ""
             return ConnectionProfile(
-                id = java.util.UUID.randomUUID().toString(),
+                id = UUID.randomUUID().toString(),
                 name = name,
                 peer = peer,
                 vkHashes = hashes,
@@ -2106,7 +2084,7 @@ private fun parseQrConfig(rawText: String): ConnectionProfile? {
 
     if (jsonStr.startsWith("{")) {
         try {
-            val jsonObj = org.json.JSONObject(jsonStr)
+            val jsonObj = JSONObject(jsonStr)
             val name = jsonObj.optString("name", "QR Профиль")
             val peer = jsonObj.getString("peer")
             val hashes = jsonObj.optString("hashes", jsonObj.optString("vkHashes", ""))
@@ -2114,7 +2092,7 @@ private fun parseQrConfig(rawText: String): ConnectionProfile? {
             val port = jsonObj.optInt("port", jsonObj.optInt("listenPort", 9000))
             val pass = jsonObj.optString("password", jsonObj.optString("pass", ""))
             return ConnectionProfile(
-                id = java.util.UUID.randomUUID().toString(),
+                id = UUID.randomUUID().toString(),
                 name = name,
                 peer = peer,
                 vkHashes = hashes,

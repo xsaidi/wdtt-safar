@@ -1,15 +1,23 @@
 package shop.safarkvn.safarvpn.ui
 
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -60,13 +68,20 @@ fun ExceptionsTab() {
 
     var appsList by remember { mutableStateOf<List<AppItem>>(AppCache.cachedList ?: emptyList()) }
     var isLoading by remember { mutableStateOf(AppCache.cachedList == null) }
+    var isMigrationReady by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var showSystemApps by remember { mutableStateOf(false) }
 
     val isWhitelist by settingsStore.isWhitelist.collectAsStateWithLifecycle(initialValue = false)
+    val runetDirect by settingsStore.runetDirect.collectAsStateWithLifecycle(initialValue = false)
 
     // Load Apps
     LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            settingsStore.migrateLegacyWhitelistMode()
+        }
+        isMigrationReady = true
+
         if (AppCache.cachedList != null) return@LaunchedEffect
         isLoading = true
         withContext(Dispatchers.IO) {
@@ -196,7 +211,7 @@ fun ExceptionsTab() {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        if (isWhitelist) "БС: Неотмеченные приложения добавляются в туннель"
+                        if (isWhitelist) "БС: Выбранные приложения добавляются в туннель"
                         else "ЧС: Выбранные приложения исключаются из туннеля",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -205,23 +220,19 @@ fun ExceptionsTab() {
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeChip("ЧС", !isWhitelist) {
+                    ModeChip("ЧС", !isWhitelist, enabled = isMigrationReady) {
                         if (isWhitelist) {
                             scope.launch {
-                                val all = appsList.map { it.packageName }.toSet()
-                                val inverted = all - selectedPackages
-                                settingsStore.saveExceptionsMode(inverted.joinToString(","), false)
+                                settingsStore.saveExceptionsMode("", false)
                                 delay(300)
                                 shop.safarkvn.safarvpn.TunnelManager.reloadWireGuard()
                             }
                         }
                     }
-                    ModeChip("БС", isWhitelist) {
+                    ModeChip("БС", isWhitelist, enabled = isMigrationReady) {
                         if (!isWhitelist) {
                             scope.launch {
-                                val all = appsList.map { it.packageName }.toSet()
-                                val inverted = all - selectedPackages
-                                settingsStore.saveExceptionsMode(inverted.joinToString(","), true)
+                                settingsStore.saveExceptionsMode("", true)
                                 delay(300)
                                 shop.safarkvn.safarvpn.TunnelManager.reloadWireGuard()
                             }
@@ -231,8 +242,61 @@ fun ExceptionsTab() {
             }
         }
 
+        AppSectionCard(
+            modifier = Modifier.padding(bottom = 12.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        "Рунет напрямую",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        "Трафик на российские IP не идёт через VPN (по подсетям). " +
+                            "Сайты .ru с зарубежным IP всё равно через туннель. " +
+                            "Рядом с RU могут уйти напрямую и некоторые чужие адреса.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp,
+                    )
+                }
+                Switch(
+                    checked = runetDirect,
+                    onCheckedChange = { enabled ->
+                        scope.launch {
+                            settingsStore.saveRunetDirect(enabled)
+                            shop.safarkvn.safarvpn.TunnelManager.reloadWireGuard()
+                        }
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = isWhitelist,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            WhitelistAlternativesCard(context = context)
+        }
+
         // List
-        if (isLoading) {
+        if (!isMigrationReady || isLoading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
@@ -268,11 +332,84 @@ fun ExceptionsTab() {
     }
 }
 
+private const val EXCLAVE_RELEASES_URL = "https://github.com/ExclaveNetwork/Exclave/releases"
+private const val V2RAYNG_RELEASES_URL = "https://github.com/2dust/v2rayNG/releases"
+
 @Composable
-private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun WhitelistAlternativesCard(context: android.content.Context) {
+    fun openUrl(url: String) {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }
+
+    AppSectionCard(
+        modifier = Modifier.padding(bottom = 12.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(
+                imageVector = Icons.Default.Info,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "БС на Android",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Белый список работает не на всех прошивках одинаково. " +
+                        "Если нужное приложение не ходит через SafarVPN или обход нестабилен — " +
+                        "попробуйте тот же профиль в другом клиенте:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 16.sp,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = { openUrl(EXCLAVE_RELEASES_URL) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Exclave", style = MaterialTheme.typography.labelMedium)
+                    }
+                    OutlinedButton(
+                        onClick = { openUrl(V2RAYNG_RELEASES_URL) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Icon(Icons.Default.OpenInNew, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("v2rayNG", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                Text(
+                    "Скачайте APK с GitHub, импортируйте конфиг и проверьте тот же сервер. " +
+                        "Если в одном клиенте не работает — часто помогает другой.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 16.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeChip(label: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
     FilterChip(
         selected = selected,
         onClick = onClick,
+        enabled = enabled,
         label = {
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(

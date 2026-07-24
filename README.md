@@ -3,7 +3,7 @@
 Android-клиент SafarVPN для WDTT-туннеля через VK TURN relay. Приложение предназначено для подписок, которые выдаются Telegram-ботом SafarVPN.
 
 **Package/applicationId:** `shop.safarkvn.safarvpn`  
-**Версия:** 1.2.5
+**Версия:** 1.3.4
 
 ## Пользовательский поток
 

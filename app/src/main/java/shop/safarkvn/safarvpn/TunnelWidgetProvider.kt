@@ -6,12 +6,9 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.os.Build
+import android.net.VpnService
 import android.widget.RemoteViews
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
+import android.widget.Toast
 
 class TunnelWidgetProvider : AppWidgetProvider() {
 
@@ -23,51 +20,20 @@ class TunnelWidgetProvider : AppWidgetProvider() {
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        
+
         if (intent.action == ACTION_TOGGLE) {
-            val isRunning = TunnelManager.running.value
-            if (isRunning) {
-                // Stop service
-                val stopIntent = Intent(context, TunnelService::class.java).apply { action = "STOP" }
-                context.startService(stopIntent)
+            if (TunnelManager.running.value) {
+                TunnelControl.stop(context)
             } else {
-                // Start service from saved settings in background thread
-                val scope = CoroutineScope(Dispatchers.IO)
-                scope.launch {
-                    val store = SettingsStore(context)
-                    val basePeer = store.peer.first()
-                    val hashes = store.vkHashes.first()
-                    val workers = store.workersPerHash.first()
-                    val port = store.listenPort.first()
-                    val password = store.connectionPassword.first()
-                    val captchaMode = store.captchaMode.first()
-                    val captchaMethod = store.captchaSolveMethod.first()
-                    val vkAnonPath = store.vkAnonPath.first()
-                    val manualPortsEnabled = store.manualPortsEnabled.first()
-                    val serverDtlsPort = if (manualPortsEnabled) store.serverDtlsPort.first() else 56000
-                    val peerWithPort = if (basePeer.isBlank()) basePeer else PeerAddress.ensurePort(basePeer, serverDtlsPort)
-                    
-                    if (peerWithPort.isNotBlank() && hashes.isNotBlank() && password.isNotBlank()) {
-                        val startIntent = Intent(context, TunnelService::class.java).apply {
-                            action = "START_FORCED"
-                            putExtra("peer", peerWithPort)
-                            putExtra("vk_hashes", hashes)
-                            putExtra("secondary_vk_hash", "")
-                            putExtra("workers_per_hash", workers)
-                            putExtra("port", port)
-                            putExtra("sni", store.sni.first())
-                            putExtra("connection_password", password)
-                            putExtra("captcha_mode", captchaMode)
-                            putExtra("captcha_solve_method", captchaMethod)
-                            putExtra("vk_anon_path", if (vkAnonPath.equals("legacy", ignoreCase = true)) "legacy" else "vkcalls")
-                        }
-                        
-                        if (Build.VERSION.SDK_INT >= 26) {
-                            context.startForegroundService(startIntent)
-                        } else {
-                            context.startService(startIntent)
-                        }
-                    }
+                if (VpnService.prepare(context) != null) {
+                    Toast.makeText(
+                        context.applicationContext,
+                        "Разрешите SafarVPN создать VPN-подключение",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    openVpnPermissionActivity(context)
+                } else {
+                    TunnelControl.startFromSavedSettings(context)
                 }
             }
         }
@@ -143,6 +109,27 @@ class TunnelWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.widget_toggle_button, pendingIntent)
             
             appWidgetManager.updateAppWidget(appWidgetId, views)
+        }
+
+        private fun openVpnPermissionActivity(context: Context) {
+            openActivity(
+                context,
+                Intent(context, VpnPermissionActivity::class.java),
+                201,
+            )
+        }
+
+        private fun openActivity(context: Context, intent: Intent, requestCode: Int) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching {
+                val pendingIntent = PendingIntent.getActivity(
+                    context,
+                    requestCode,
+                    intent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                pendingIntent.send()
+            }
         }
     }
 }

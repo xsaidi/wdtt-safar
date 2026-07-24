@@ -191,7 +191,9 @@ func WorkerGroup(
 						strings.Contains(errStrLower, "allocation mismatch") ||
 						strings.Contains(errStrLower, "error 508"))
 
-					if strings.Contains(errStrLower, "rate limit") ||
+					if hint := workerErrorHint(sessErr); hint != "" {
+						errStr += " | " + hint
+					} else if strings.Contains(errStrLower, "rate limit") ||
 						strings.Contains(errStrLower, "flood control") ||
 						strings.Contains(errStrLower, "ip mismatch") ||
 						strings.Contains(errStrLower, "error 29") {
@@ -292,6 +294,7 @@ type TurnParams struct {
 	Port    string
 	Hashes  []string
 	WrapKey []byte // Password-derived WRAP key (32 bytes), nil = disabled
+	ObfsMode string // "audio" or "video" — RTP masking mode
 }
 
 // Credentials — учетные данные TURN

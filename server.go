@@ -208,18 +208,6 @@ func getPublicIP() string {
 	return publicIP
 }
 
-func stripVkUrl(url string) string {
-	url = strings.TrimSpace(url)
-	if idx := strings.LastIndex(url, "/"); idx != -1 {
-		url = url[idx+1:]
-	}
-	if idx := strings.Index(url, "?"); idx != -1 {
-		url = url[:idx]
-	}
-	return strings.TrimSpace(url)
-}
-
-
 type wrapKeyEntry struct {
 	id  string
 	key []byte
@@ -2305,19 +2293,26 @@ func getAEAD(key []byte) (cipher.AEAD, error) {
 }
 
 type ObfsState struct {
-	mu      sync.Mutex
-	initSeq uint16
-	initTs  uint32
-	count   uint64
+	mu         sync.Mutex
+	seq        uint16
+	timestamp  uint32
+	lastPacket time.Time
+	count      uint64
 }
 
-func NewObfsConfig() *ObfsConfig {
+func NewObfsConfig(mode string) *ObfsConfig {
 	var buf [4]byte
 	rand.Read(buf[:])
+	pt := uint8(111)
+	pad := 24
+	if strings.EqualFold(strings.TrimSpace(mode), "video") {
+		pt = 96
+		pad = 60
+	}
 	return &ObfsConfig{
 		SSRC:        binary.BigEndian.Uint32(buf[:]),
-		PayloadType: 111,
-		PaddingMax:  24,
+		PayloadType: pt,
+		PaddingMax:  pad,
 	}
 }
 
@@ -2325,10 +2320,55 @@ func NewObfsState() *ObfsState {
 	var buf [6]byte
 	rand.Read(buf[:])
 	return &ObfsState{
-		initSeq: binary.BigEndian.Uint16(buf[0:2]),
-		initTs:  binary.BigEndian.Uint32(buf[2:6]),
-		count:   0,
+		seq:       binary.BigEndian.Uint16(buf[0:2]),
+		timestamp: binary.BigEndian.Uint32(buf[2:6]),
 	}
+}
+
+func rtpTimestampStep(elapsed time.Duration, jitter byte) uint32 {
+	samples := int64(elapsed) * 48000 / int64(time.Second)
+	if samples < 120 {
+		samples = 120
+	} else if samples > 2880 {
+		samples = 2880
+	}
+	samples = ((samples + 60) / 120) * 120
+	samples += int64(int(jitter)%3-1) * 120
+	if samples < 120 {
+		samples = 120
+	} else if samples > 2880 {
+		samples = 2880
+	}
+	return uint32(samples)
+}
+
+func rtpSequenceStep(selector byte) uint16 {
+	if selector&0x7F == 0 {
+		return 2 + uint16(selector>>7)
+	}
+	return 1
+}
+
+func (s *ObfsState) nextHeader(now time.Time, jitter, sequenceSelector byte) (uint16, uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seq := s.seq
+	if s.count > 0 {
+		s.timestamp += rtpTimestampStep(now.Sub(s.lastPacket), jitter)
+	}
+	timestamp := s.timestamp
+	s.seq += rtpSequenceStep(sequenceSelector)
+	s.lastPacket = now
+	s.count++
+	return seq, timestamp
+}
+
+func useRTPPadding(selector byte) bool {
+	return selector&0x03 == 0
+}
+
+func useRTPMarker(selector byte) bool {
+	return selector&0x3F == 0
 }
 
 func obfsBuildNonce(ssrc uint32, seq uint16, ts uint32) []byte {
@@ -2346,27 +2386,31 @@ func obfsWrapPacket(key, payload []byte, cfg *ObfsConfig, state *ObfsState) ([]b
 	if len(payload) == 0 {
 		return nil, errors.New("obfs: empty payload")
 	}
-	state.mu.Lock()
-	c := state.count
-	state.count++
-	state.mu.Unlock()
 
-	seq := state.initSeq + uint16(c)
-	ts := state.initTs + uint32(c)*960 + uint32(c>>16)
+	var randomBytes [5]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
+		return nil, fmt.Errorf("obfs: random RTP metadata: %w", err)
+	}
+	seq, ts := state.nextHeader(time.Now(), randomBytes[2], randomBytes[4])
 
 	nonce := obfsBuildNonce(cfg.SSRC, seq, ts)
+	padTotal := 0
 	padRand := 0
-	if cfg.PaddingMax > 0 {
-		var rndBuf [1]byte
-		rand.Read(rndBuf[:])
-		padRand = int(rndBuf[0]) % cfg.PaddingMax
+	if cfg.PaddingMax > 0 && useRTPPadding(randomBytes[0]) {
+		padRand = int(randomBytes[1]) % cfg.PaddingMax
+		padTotal = padRand + 1
 	}
-	padTotal := padRand + 1
 	outLen := 12 + len(payload) + chacha20poly1305.Overhead + padTotal
 	out := make([]byte, outLen)
 
-	out[0] = 0x80 | 0x20
+	out[0] = 0x80
+	if padTotal > 0 {
+		out[0] |= 0x20
+	}
 	out[1] = cfg.PayloadType & 0x7F
+	if useRTPMarker(randomBytes[3]) {
+		out[1] |= 0x80
+	}
 	binary.BigEndian.PutUint16(out[2:4], seq)
 	binary.BigEndian.PutUint32(out[4:8], ts)
 	binary.BigEndian.PutUint32(out[8:12], cfg.SSRC)
@@ -2378,9 +2422,13 @@ func obfsWrapPacket(key, payload []byte, cfg *ObfsConfig, state *ObfsState) ([]b
 	sealed := aead.Seal(out[12:12], nonce, payload, out[:12])
 	padStart := 12 + len(sealed)
 	if padRand > 0 {
-		rand.Read(out[padStart : padStart+padRand])
+		if _, err := rand.Read(out[padStart : padStart+padRand]); err != nil {
+			return nil, fmt.Errorf("obfs: random padding bytes: %w", err)
+		}
 	}
-	out[outLen-1] = byte(padTotal)
+	if padTotal > 0 {
+		out[outLen-1] = byte(padTotal)
+	}
 	return out, nil
 }
 
@@ -2432,7 +2480,7 @@ func obfsIsRTPPacket(wire []byte) bool {
 		return false
 	}
 	pt := wire[1] & 0x7F
-	return pt == 111
+	return pt == 111 || pt == 96
 }
 
 func listenWrapped(addr *net.UDPAddr, keys *wrapKeyStore) (dtlsnet.PacketListener, error) {
@@ -2493,7 +2541,13 @@ func (c *wrapPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			return 0, addr, uErr
 		}
 		c.key = append([]byte(nil), key...) // Клонируем ключ в независимую память!
-		c.obfsCfg = NewObfsConfig()
+		c.obfsCfg = NewObfsConfig("audio")
+		if len(raw) > 1 {
+			c.obfsCfg.PayloadType = raw[1] & 0x7F
+			if c.obfsCfg.PayloadType == 96 {
+				c.obfsCfg.PaddingMax = 60
+			}
+		}
 		c.obfsWrite = NewObfsState()
 		atomic.StoreInt32(&c.selected, 1)
 		if atomic.CompareAndSwapInt32(&c.authLog, 0, 1) {
@@ -2509,7 +2563,13 @@ func (c *wrapPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		key, m2, uErr2 := c.keys.Unwrap(raw, p)
 		if uErr2 == nil {
 			c.key = append([]byte(nil), key...) // На лету обновляем ключ сессии!
-			c.obfsCfg = NewObfsConfig()
+			c.obfsCfg = NewObfsConfig("audio")
+			if len(raw) > 1 {
+				c.obfsCfg.PayloadType = raw[1] & 0x7F
+				if c.obfsCfg.PayloadType == 96 {
+					c.obfsCfg.PaddingMax = 60
+				}
+			}
 			c.obfsWrite = NewObfsState()
 			log.Printf("[WRAP] Обновлен ключ на лету для %s (пароль изменился/обновился)", addr.String())
 			return m2, addr, nil
@@ -2524,7 +2584,7 @@ func (c *wrapPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		return 0, errors.New("wrap: key not selected")
 	}
 	if c.obfsCfg == nil || c.obfsWrite == nil {
-		c.obfsCfg = NewObfsConfig()
+		c.obfsCfg = NewObfsConfig("audio")
 		c.obfsWrite = NewObfsState()
 	}
 	wrapped, wErr := obfsWrapPacket(c.key, p, c.obfsCfg, c.obfsWrite)
